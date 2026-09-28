@@ -1,43 +1,23 @@
-# CI/CD Lab - Node.js Deployment Pipeline
+# App Deployment Pipeline via GitHub Actions
 
-## Overview
-This repository contains a simple Node.js application configured with automated testing, CI/CD pipeline via GitHub Actions, and container image publishing to Docker Hub.
+This repository contains a Node.js application packaged with Docker and automated via GitHub Actions to deploy seamlessly onto a Kubernetes cluster.
 
-## Project Structure
-- `app.js`: Main Node.js server with `/health` check endpoint.
-- `test.js`: Integration test for health check endpoint.
-- `.github/workflows/ci.yml`: CI/CD workflow running automated tests and publishing Docker images.
-- `Dockerfile`: Container configuration for Node.js 20.
+## Architecture / Flow Diagram
+[Code Commit (main)] ---> [GitHub Actions CI/CD] ---> [Build Docker Image] ---> [Push to AWS ECR] ---> [Update K8s Manifest] ---> [Deploy to Kubernetes Cluster & Verify Rollout]
 
----
+## Assumptions
+- The application uses `main` as the production release branch.
+- Target Kubernetes cluster is accessible via a provided `Kubeconfig` secret.
+- AWS Elastic Container Registry (ECR) is pre-configured to host the container images.
 
-## Part D: Understanding Deployment Strategies
+## Prerequisites & Secrets Configuration
+To make this pipeline run successfully, add the following secrets in your GitHub repository settings (`Settings > Secrets and variables > Actions`):
+1. `AWS_ACCESS_KEY_ID`: AWS Access Key with ECR permissions.
+2. `AWS_SECRET_ACCESS_KEY`: AWS Secret Key.
+3. `KUBE_CONFIG_BASE64`: Base64-encoded Kubernetes configuration file (`~/.kube/config`).
 
-### Q1: Your application is a REST API with 3 running replicas in Kubernetes. You want to deploy a new version with zero downtime. Which strategy would you use and why?
-**Answer:**
-**Rolling Update Strategy.**
-- **Why:** Kubernetes replaces old replicas with new ones incrementally. By setting `maxUnavailable` and `maxSurge` controls, a set of healthy replicas always remains online to serve incoming traffic, guaranteeing zero downtime.
-
----
-
-### Q2: Your team just discovered a critical bug in the version deployed 10 minutes ago. You used a rolling update. What is the fastest way to recover?
-**Answer:**
-**Automated Rollback via `kubectl rollout undo`.**
-- **Why:** This command instantly reverts the deployment to the previous revision using pre-existing, cached container images, providing an immediate fix without waiting for a new CI/CD build pipeline execution.
-
----
-
-### Q3: You are deploying a major new feature that you want only 5% of users to see first. Which strategy applies?
-**Answer:**
-**Canary Deployment Strategy.**
-- **Why:** Traffic management tools route a small subset of user traffic (5%) to the new version while keeping 95% on the stable version. This allows real-world validation of new features under production conditions before a full rollout.
-
----
-
-### Q4: You are deploying a database schema migration that is not backwards compatible with the old application version. Why can a rolling update be dangerous here? What strategy would you use instead?
-**Answer:**
-- **Why Rolling Update is dangerous:** Old and new app versions briefly run side-by-side during a rolling update. A non-backwards-compatible database change breaks active old replicas that still rely on the old schema.
-- **Alternative Strategies:**
-  1. **Recreate Strategy:** Stop all v1 pods, execute the database migration, then deploy v2.
-  2. **Blue-Green Deployment:** Deploy v2 with the updated database in an isolated environment, verify functionality, and switch production traffic all at once.
-  3. **Expand-Contract Pattern:** Break schema updates into backward-compatible steps across multiple controlled deployments.
+## How It Works
+1. **Trigger:** Any push to the `main` branch triggers the GitHub Actions workflow.
+2. **Build & Push:** The workflow builds the Docker image using the root `Dockerfile`, tags it with the unique Git Commit SHA (`github.sha`), and pushes it to AWS ECR.
+3. **Deploy:** It configures `kubectl`, updates the image tag dynamically in the Kubernetes manifest file, and applies the deployment to the `production` namespace.
+4. **Rollout Check & Rollback:** It monitors the rollout status. If any failure or timeout occurs, it automatically triggers `kubectl rollout undo` to rollback safely.

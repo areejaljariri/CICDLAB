@@ -1,50 +1,64 @@
-name: CI Workflow
+name: Build, Push and Deploy to Kubernetes
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: my-app
+  K8S_NAMESPACE: production
 
 jobs:
-  test:
+  build-and-deploy:
     runs-on: ubuntu-latest
-
+    
     steps:
-      - name: Checkout code
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          node-version: '20'
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Run Tests
-        run: npm test
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-  build-push:
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Build, Tag, and Push Docker Image to Amazon ECR
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $REGISTRY/$ECR_REPOSITORY:latest .
+          docker push $REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $REGISTRY/$ECR_REPOSITORY:latest
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Configure Kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets.KUBE_CONFIG_BASE64 }}" | base64 -d > ~/.kube/config
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Update Kubernetes Manifest with New Image Tag
+        run: |
+          # تحديث الوسم تلقائياً داخل ملف الـ deployment الخاص بك في مجلد k8s
+          sed -i "s|image:.*|image: ${{ steps.login-ecr.outputs.registry }}/$ECR_REPOSITORY:${{ github.sha }}|g" ./k8s/deployment.yaml
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/cicd-lab:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/cicd-lab:${{ github.sha }}
+      - name: Apply Kubernetes Manifest
+        run: |
+          kubectl apply -f ./k8s/deployment.yaml -n ${{ env.K8S_NAMESPACE }}
+
+      - name: Check Deployment Rollout Status
+        run: |
+          kubectl rollout status deployment/my-app-deployment -n ${{ env.K8S_NAMESPACE }} --timeout=300s || {
+            echo "Rollout failed! Rolling back...";
+            kubectl rollout undo deployment/my-app-deployment -n ${{ env.K8S_NAMESPACE }};
+            exit 1;
+          }
